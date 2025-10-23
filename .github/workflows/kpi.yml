@@ -25,16 +25,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ▶️ Playwright(화면 스크래핑) 쓸 때만 아래 주석 해제
-      # - name: Install Playwright (chromium)
-      #   run: python -m playwright install --with-deps chromium
+      # Playwright 브라우저 설치
+      - name: Install Playwright (chromium)
+        run: python -m playwright install --with-deps chromium
 
       - name: Post KPI to Slack
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
-          # 아래는 선택(실제 API/로그인 사용할 때 Secrets 추가 후 주석 해제)
-          # BISKIT_API_TOKEN: ${{ secrets.BISKIT_API_TOKEN }}
-          # BISKIT_USER: ${{ secrets.BISKIT_USER }}
-          # BISKIT_PASS: ${{ secrets.BISKIT_PASS }}
+          # 필요하면 아래처럼 추가할 수도 있어요 (선택)
+          # BISKIT_DASHBOARD_URL: https://biskit.devskrf.cloud/crci/core-kpi/overview/summary/daily
+          # USE_YESTERDAY: "1"
         run: python kpi_to_slack.py
