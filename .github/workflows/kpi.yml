@@ -1,18 +1,4 @@
-import os, datetime, requests
-
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "#bi-daily")
-
-def post_to_slack(blocks):
-    url = "https://slack.com/api/chat.postMessage"
-    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
-    payload = {
-        "channel": SLACK_CHANNEL,
-        "blocks": blocks,
-        "text": "CookieRun India Daily KPI",  # fallback 텍스트
-    }
-    r = requests.post(url, headers=headers, json=payload)
-    r.raise_for_status()
-    res = r.json()
-    if not res.get("ok"):
-        raise Exception(f"Slack error: {res}")
+      - env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+        run: python kpi_to_slack.py
