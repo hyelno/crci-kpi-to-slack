@@ -1,4 +1,40 @@
-      - env:
+name: Daily KPI to Slack
+
+on:
+  schedule:
+    # ⏰ 09:15 KST = 00:15 UTC
+    - cron: "15 0 * * *"
+  workflow_dispatch:  # 수동 실행 버튼
+
+permissions:
+  contents: read
+
+jobs:
+  post-kpi:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ▶️ Playwright(화면 스크래핑) 쓸 때만 아래 주석 해제
+      # - name: Install Playwright (chromium)
+      #   run: python -m playwright install --with-deps chromium
+
+      - name: Post KPI to Slack
+        env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          # 아래는 선택(실제 API/로그인 사용할 때 Secrets 추가 후 주석 해제)
+          # BISKIT_API_TOKEN: ${{ secrets.BISKIT_API_TOKEN }}
+          # BISKIT_USER: ${{ secrets.BISKIT_USER }}
+          # BISKIT_PASS: ${{ secrets.BISKIT_PASS }}
         run: python kpi_to_slack.py
