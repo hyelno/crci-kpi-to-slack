@@ -1,4 +1,4 @@
-import os, asyncio, datetime, requests, re
+import os, asyncio, datetime, requests, re, json
 from playwright.async_api import async_playwright
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -6,9 +6,8 @@ SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "Cxxxxxxxx")
 TARGET_URL = "https://biskit.devskrf.cloud/crci/core-kpi/overview/summary/daily"
 USE_YESTERDAY = os.getenv("USE_YESTERDAY", "1") == "1"
 
-# SSO 로그인 정보 (GitHub Secrets에 저장)
-KRAFTON_EMAIL = os.environ.get("KRAFTON_EMAIL")
-KRAFTON_PASSWORD = os.environ.get("KRAFTON_PASSWORD")
+# 쿠키 정보 (GitHub Secrets에서 가져옴)
+BISKIT_COOKIES = os.environ.get("BISKIT_COOKIES")
 
 def fmt_krw(n: float) -> str:
     if n >= 10000:
@@ -30,123 +29,56 @@ def parse_number(text: str) -> int:
     except:
         return 0
 
-async def login_and_scrape(date_str: str):
+async def scrape_with_cookies(date_str: str):
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         ctx = await browser.new_context()
+        
+        # 쿠키 로드
+        if BISKIT_COOKIES:
+            try:
+                cookies = json.loads(BISKIT_COOKIES)
+                await ctx.add_cookies(cookies)
+                print(f"[INFO] Loaded {len(cookies)} cookies")
+            except Exception as e:
+                print(f"[ERROR] Failed to load cookies: {e}")
+                raise
+        else:
+            raise Exception("BISKIT_COOKIES not found in environment!")
+        
         page = await ctx.new_page()
 
         try:
-            print(f"[INFO] Loading {TARGET_URL}")
-            await page.goto(TARGET_URL, timeout=60000)
+            print(f"[INFO] Loading {TARGET_URL} with cookies...")
+            await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
             
-            # ============================================
-            # 1단계: DevSisters SSO (크래프톤 직원 로그인)
-            # ============================================
-            print("[INFO] Step 1: Waiting for DevSisters SSO page...")
-            
-            # "크래프톤 직원 로그인" 버튼 찾기 (여러 가능한 텍스트)
-            try:
-                # 버튼 클릭 (한글 또는 영문 텍스트)
-                krafton_button = page.locator('text="크래프톤 직원 로그인"').or_(page.locator('text="Krafton Employee Login"'))
-                await krafton_button.click(timeout=10000)
-                print("[INFO] Clicked '크래프톤 직원 로그인' button")
-            except:
-                print("[WARN] '크래프톤 직원 로그인' button not found, trying alternative...")
-                # 대안: 직접 링크로 이동
-                pass
-            
-            await page.wait_for_timeout(2000)
-            
-            # Microsoft SSO 로그인
-            print("[INFO] Entering credentials for Microsoft SSO...")
-            
-            # 이메일 입력
-            try:
-                email_input = page.locator('input[name="loginfmt"]').or_(page.locator('input[type="email"]'))
-                await email_input.fill(KRAFTON_EMAIL, timeout=10000)
-                print(f"[INFO] Entered email: {KRAFTON_EMAIL[:3]}***")
-                
-                # "다음" 버튼 클릭
-                next_button = page.locator('input[type="submit"]').or_(page.locator('button:has-text("Next")'))
-                await next_button.click()
-                await page.wait_for_timeout(2000)
-            except Exception as e:
-                print(f"[WARN] Email step: {e}")
-            
-            # 비밀번호 입력
-            try:
-                password_input = page.locator('input[name="passwd"]').or_(page.locator('input[type="password"]'))
-                await password_input.fill(KRAFTON_PASSWORD, timeout=10000)
-                print("[INFO] Entered password")
-                
-                # "로그인" 버튼 클릭
-                signin_button = page.locator('input[type="submit"]').or_(page.locator('button:has-text("Sign in")'))
-                await signin_button.click()
-                await page.wait_for_timeout(3000)
-            except Exception as e:
-                print(f"[WARN] Password step: {e}")
-            
-            # "로그인 유지" 화면이 나올 수 있음
-            try:
-                stay_signed_in = page.locator('input[type="submit"]').or_(page.locator('button:has-text("Yes")'))
-                await stay_signed_in.click(timeout=5000)
-                print("[INFO] Clicked 'Stay signed in'")
-            except:
-                print("[INFO] No 'Stay signed in' prompt")
-            
-            await page.wait_for_timeout(3000)
-            
-            # ============================================
-            # 2단계: CRCI Krafton SSO
-            # ============================================
-            print("[INFO] Step 2: Waiting for CRCI Krafton SSO page...")
-            
-            # "Krafton" 버튼 클릭
-            try:
-                krafton_button_2 = page.locator('button:has-text("Krafton")').or_(page.locator('text="Krafton"'))
-                await krafton_button_2.click(timeout=10000)
-                print("[INFO] Clicked 'Krafton' button")
-                await page.wait_for_timeout(5000)
-            except Exception as e:
-                print(f"[WARN] Krafton button step: {e}")
-            
-            # Microsoft SSO 다시 (자동으로 넘어갈 수도 있음)
-            try:
-                # 이미 로그인되어 있으면 자동으로 넘어감
-                # 아니면 다시 이메일 입력
-                email_input_2 = page.locator('input[name="loginfmt"]').or_(page.locator('input[type="email"]'))
-                if await email_input_2.is_visible(timeout=5000):
-                    await email_input_2.fill(KRAFTON_EMAIL)
-                    next_btn = page.locator('input[type="submit"]')
-                    await next_btn.click()
-                    await page.wait_for_timeout(2000)
-                    
-                    password_input_2 = page.locator('input[name="passwd"]')
-                    await password_input_2.fill(KRAFTON_PASSWORD)
-                    signin_btn = page.locator('input[type="submit"]')
-                    await signin_btn.click()
-                    await page.wait_for_timeout(3000)
-                    print("[INFO] Completed second SSO login")
-            except:
-                print("[INFO] Second SSO auto-passed (already authenticated)")
-            
-            # ============================================
-            # 3단계: 대시보드 로딩 대기
-            # ============================================
+            # 페이지 로딩 대기
             print("[INFO] Waiting for dashboard to load...")
-            await page.wait_for_timeout(15000)  # Tableau 로딩 대기
+            await page.wait_for_timeout(15000)
             
-            print(f"[INFO] Final URL: {page.url}")
+            print(f"[INFO] Current URL: {page.url}")
+            print(f"[INFO] Page title: {await page.title()}")
             
-            # ============================================
-            # 4단계: 데이터 추출
-            # ============================================
+            # 로그인 확인
+            if "login" in page.url.lower() or "auth" in page.url.lower():
+                print("[ERROR] Still on login page - cookies expired or invalid!")
+                await page.screenshot(path="login_failed.png")
+                raise Exception("Authentication failed - cookies may be expired")
+            
+            # HTML에 CRCI 요소 확인
+            html = await page.content()
+            if "CRCI_DAILY_BIGNUMBER" in html:
+                print("[INFO] ✅ Dashboard loaded successfully!")
+            else:
+                print("[WARN] ❌ Dashboard elements not found")
+                await page.screenshot(path="dashboard_failed.png")
+            
+            # 데이터 추출
             async def get_by_exact_value(value_name):
                 try:
                     selector = f'div[id*="{value_name}"]'
                     el = page.locator(selector).first
-                    txt = (await el.text_content(timeout=10000)) or ""
+                    txt = (await el.text_content(timeout=15000)) or ""
                     result = txt.strip()
                     print(f"[DEBUG] {value_name}: '{result}'")
                     return result
@@ -177,7 +109,9 @@ async def login_and_scrape(date_str: str):
             return kpi
             
         except Exception as e:
-            print(f"[ERROR] Login/Scraping failed: {e}")
+            print(f"[ERROR] Scraping failed: {e}")
+            import traceback
+            traceback.print_exc()
             await browser.close()
             raise
 
@@ -207,13 +141,13 @@ def post_to_slack(blocks):
     print("[SUCCESS] Message posted to Slack")
 
 if __name__ == "__main__":
-    if not KRAFTON_EMAIL or not KRAFTON_PASSWORD:
-        raise SystemExit("[ERROR] KRAFTON_EMAIL and KRAFTON_PASSWORD must be set in GitHub Secrets!")
+    if not BISKIT_COOKIES:
+        raise SystemExit("[ERROR] BISKIT_COOKIES must be set in GitHub Secrets!")
     
     kst = datetime.timezone(datetime.timedelta(hours=9))
     today = datetime.datetime.now(tz=kst).date()
     target = today - datetime.timedelta(days=1) if USE_YESTERDAY else today
     ds = target.strftime("%Y-%m-%d")
 
-    kpi = asyncio.run(login_and_scrape(ds))
+    kpi = asyncio.run(scrape_with_cookies(ds))
     post_to_slack(make_blocks(ds, kpi))
