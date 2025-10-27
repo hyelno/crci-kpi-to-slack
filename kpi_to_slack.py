@@ -1,96 +1,84 @@
-import os, asyncio, datetime, requests
+import os, asyncio, datetime, requests, re
 from playwright.async_api import async_playwright
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-SLACK_CHANNEL   = os.environ.get("SLACK_CHANNEL", "Cxxxxxxxx")  # 채널ID 권장
-TARGET_URL      = os.getenv("BISKIT_DASHBOARD_URL", "https://biskit.devskrf.cloud/crci/core-kpi/overview/summary/daily")
-USE_YESTERDAY   = os.getenv("USE_YESTERDAY", "1") == "1"  # 집계 시차 고려 기본: 어제
+SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL", "Cxxxxxxxx")
+TARGET_URL = "https://biskit.devskrf.cloud/crci/core-kpi/overview/summary/daily"
+USE_YESTERDAY = os.getenv("USE_YESTERDAY", "1") == "1"
 
-def fmt_krw(n: int) -> str:
+def fmt_krw(n: float) -> str:
+    """숫자를 원화 형식으로 변환 (만 단위 처리 포함)"""
+    if n >= 10000:
+        return f"₩{n/10000:.1f}만"
     return "₩" + format(int(n), ",")
 
-def pct_text(x: str) -> str:
-    s = str(x).strip()
-    if s.endswith("%"):
-        return s
+def parse_krw(text: str) -> float:
+    """₩ 2,467.83 또는 ₩ 1,283.8 만 형태를 숫자로 변환"""
+    text = text.strip()
+    
+    # "만" 단위 처리
+    if "만" in text:
+        num_part = re.sub(r'[^\d.]', '', text)
+        return float(num_part) * 10000
+    
+    # 일반 숫자
+    num_part = re.sub(r'[^\d.]', '', text)
+    return float(num_part) if num_part else 0
+
+def parse_number(text: str) -> int:
+    """공백과 콤마를 제거하고 정수로 변환"""
+    text = text.strip().replace(",", "").replace(" ", "")
     try:
-        v = float(s)
-        if v <= 1: v *= 100
-        return f"{v:.1f}%"
+        return int(text)
     except:
-        return s
+        return 0
 
 async def scrape_kpis(date_str: str):
-    """
-    ✅ 숫자를 읽어오는 '셀렉터'만 맞추면 됩니다.
-    아래 1차/2차/3차 방식 중 Lynn 화면에서 되는 걸 그대로 두세요.
-    """
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True)
         ctx = await browser.new_context()
         page = await ctx.new_page()
 
+        print(f"[INFO] Loading {TARGET_URL}")
         await page.goto(TARGET_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(5000)  # 5초 대기 (Tableau 로딩)
 
-        # (선택) 날짜 선택 UI가 있다면 여기에 조작 추가
-        # await page.click("[data-testid='date-picker']")
-        # await page.fill("[data-testid='date-input']", date_str)
-        # await page.press("[data-testid='date-input']", "Enter")
-        # await page.wait_for_timeout(1200)
-
-        # --- KPI 추출 ---
-        # 1차: data-testid가 있는 경우 (있다면 가장 안정적)
-        async def get_by_testid(tid):
+        # ✅ 정확한 ID로 데이터 가져오기
+        async def get_by_exact_value(value_name):
             try:
-                el = page.locator(f"[data-testid='{tid}']").first
+                # id 속성에 정확한 value가 포함된 요소 찾기
+                selector = f'div[id*="{value_name}"]'
+                el = page.locator(selector).first
                 txt = (await el.text_content()) or ""
-                return txt.strip()
-            except:
+                result = txt.strip()
+                print(f"[DEBUG] {value_name}: '{result}'")
+                return result
+            except Exception as e:
+                print(f"[ERROR] Failed to get {value_name}: {e}")
                 return ""
 
-        # 2차: 카드 라벨(예: DAU) 텍스트 기준으로 형제 요소 숫자 찾기 (Tableau/대시보드 공용 패턴)
-        async def get_by_label(label):
-            try:
-                el = page.locator(f"text={label}").first
-                # 라벨 바로 근처 숫자 노드 탐색
-                parent = el.locator("xpath=..")
-                num = await parent.locator("xpath=.//following::*[1]").first.text_content()
-                return (num or "").strip()
-            except:
-                return ""
-
-        # 3차: 마지막 수단 – 페이지 전체에서 라벨 다음의 숫자 패턴 매칭
-        async def robust(label):
-            txt = await page.content()
-            import re
-            # 라벨과 숫자 사이 HTML이 끼어들 수 있어 느슨한 정규식
-            m = re.search(rf"{label}[\s\S]{{0,80}}?([₩]?\s?\d[\d,\.]*)", txt, re.IGNORECASE)
-            return m.group(1).strip() if m else ""
-
-        # 우선순위별 가져오기 (필요 시 testid 값만 바꾸면 됩니다)
-        dau  = await get_by_testid("kpi-dau")          or await get_by_label("DAU")          or await robust("DAU")
-        newu = await get_by_testid("kpi-new-users")     or await get_by_label("New Users")    or await robust("New Users")
-        rev  = await get_by_testid("kpi-revenue")       or await get_by_label("Revenue")      or await robust("Revenue")
-        arpd = await get_by_testid("kpi-arpdau")        or await get_by_label("ARPDAU")       or await robust("ARPDAU")
-        d1   = await get_by_testid("kpi-d1")            or await get_by_label("D1")           or await robust("D1")
+        # 실제 ID 값으로 데이터 가져오기
+        au_text = await get_by_exact_value("CRCI_DAILY_BIGNUMBER_DAILY_AU_CHART")
+        nu_text = await get_by_exact_value("CRCI_DAILY_BIGNUMBER_DAILY_NU_CHART")
+        rev_text = await get_by_exact_value("CRCI_DAILY_BIGNUMBER_DAILY_REVENUE_CHART")
+        rev_accum_text = await get_by_exact_value("CRCI_DAILY_BIGNUMBER_DAILY_REVENUE_ACCUM_CHART")
 
         await browser.close()
 
-        def to_int(x):
-            s = str(x).replace("₩","").replace(",","").strip()
-            # 소수점 있으면 반올림
-            try:
-                return int(round(float(s)))
-            except:
-                return 0
+        # 데이터 파싱
+        au = parse_number(au_text)
+        nu = parse_number(nu_text)
+        revenue = parse_krw(rev_text)
+        revenue_accum = parse_krw(rev_accum_text)
 
         kpi = {
-            "DAU": f"{to_int(dau):,}" if dau else "-",
-            "New Users": f"{to_int(newu):,}" if newu else "-",
-            "Revenue": fmt_krw(to_int(rev)) if rev else "-",
-            "ARPDAU": fmt_krw(to_int(arpd)) if arpd else "-",
-            "D1 Retention": pct_text(d1) if d1 else "-",
+            "DAU": f"{au:,}" if au > 0 else "-",
+            "New Users": f"{nu:,}" if nu > 0 else "-",
+            "일매출": fmt_krw(revenue) if revenue > 0 else "-",
+            "누적매출": fmt_krw(revenue_accum) if revenue_accum > 0 else "-",
         }
+        
+        print(f"[INFO] Parsed KPI: {kpi}")
         return kpi
 
 def make_blocks(date_str, kpi):
@@ -98,9 +86,8 @@ def make_blocks(date_str, kpi):
     fields = [
         f"*DAU*: {kpi['DAU']}",
         f"*New Users*: {kpi['New Users']}",
-        f"*Revenue*: {kpi['Revenue']}",
-        f"*ARPDAU*: {kpi['ARPDAU']}",
-        f"*D1 Retention*: {kpi['D1 Retention']}",
+        f"*일매출*: {kpi['일매출']}",
+        f"*누적매출*: {kpi['누적매출']}",
     ]
     return [
         {"type":"header","text":{"type":"plain_text","text":title}},
@@ -117,6 +104,7 @@ def post_to_slack(blocks):
     res = requests.post(url, headers=headers, json=payload, timeout=30).json()
     if not res.get("ok"):
         raise SystemExit(f"Slack error: {res}")
+    print("[SUCCESS] Message posted to Slack")
 
 if __name__ == "__main__":
     kst = datetime.timezone(datetime.timedelta(hours=9))
@@ -126,3 +114,17 @@ if __name__ == "__main__":
 
     kpi = asyncio.run(scrape_kpis(ds))
     post_to_slack(make_blocks(ds, kpi))
+```
+
+---
+
+## 🎯 테스트 단계
+
+1. **위 코드를 `kpi_to_slack.py`에 복사 → Commit**
+2. **Actions → Run workflow** 실행
+3. **로그에서 확인**:
+```
+   [DEBUG] CRCI_DAILY_BIGNUMBER_DAILY_AU_CHART: '965'
+   [DEBUG] CRCI_DAILY_BIGNUMBER_DAILY_NU_CHART: '166'
+   [DEBUG] CRCI_DAILY_BIGNUMBER_DAILY_REVENUE_CHART: '₩ 2,467.83'
+   [INFO] Parsed KPI: {'DAU': '965', 'New Users': '166', ...}
